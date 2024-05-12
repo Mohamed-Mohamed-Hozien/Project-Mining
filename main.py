@@ -1,19 +1,37 @@
+import tkinter as tk
+from tkinter import scrolledtext
+from tkinter import messagebox
 import pyterrier as pt
 import nltk
 import pandas as pd
 import os
+import torch
 import re
 from nltk.tokenize import word_tokenize
 from nltk.corpus import stopwords
 from nltk.stem import PorterStemmer
+import tensorflow as tf
+import tensorflow_hub as hub
+import numpy as np
+from transformers import AutoTokenizer, AutoModel
 
+
+# Initialize PyTerrier if not already started
+if not pt.started():
+    pt.init(boot_packages=["com.github.terrierteam:terrier-prf:-SNAPSHOT"])
+
+# Set JAVA_HOME environment variable
 os.environ["JAVA_HOME"] = "C:\\Program Files\\Java\\jdk-22"
 
+# Initialize PyTerrier again
 if not pt.started():
     pt.init()
 
+# Define categories
 categories = ['business', 'entertainment', 'food',
               'graphics', 'historical', 'space', 'sport', 'technologie']
+
+# Function to read data
 
 
 def read_data(categories):
@@ -28,6 +46,8 @@ def read_data(categories):
                     if line:
                         collection.append({'category': category, 'text': line})
     return collection
+
+# Function to preprocess text
 
 
 def preprocess_text(text):
@@ -57,19 +77,7 @@ def preprocess_text(text):
     text = stem_text(text)
     return text
 
-
-def build_inverted_index(df):
-    inverted_index = {}
-    for index, row in df.iterrows():
-        doc_id = index + 1
-        words = row['text'].split()
-        for term in words:
-            if term not in inverted_index:
-                inverted_index[term] = {}
-            if doc_id not in inverted_index[term]:
-                inverted_index[term][doc_id] = 0
-            inverted_index[term][doc_id] += 1
-    return inverted_index
+# Function to clean text
 
 
 def clean_text(text):
@@ -83,6 +91,8 @@ def clean_text(text):
     text = text.strip()
     return text
 
+# Function to index documents
+
 
 def index_documents(df):
     df['processed_text'] = df['text'].apply(preprocess_text)
@@ -91,100 +101,180 @@ def index_documents(df):
     df['docno'] = df['docno'].apply(str)
     return df
 
+# Function to build inverted index
+
+
+def build_inverted_index(df):
+    inverted_index = {}
+    df2 = index_documents(df)
+    for index, row in df2.iterrows():
+        doc_id = index + 1
+        words = row['text'].split()
+
+        for term in words:
+            if term not in inverted_index:
+                inverted_index[term] = {}
+            if doc_id not in inverted_index[term]:
+                inverted_index[term][doc_id] = 0
+            inverted_index[term][doc_id] += 1
+    return inverted_index
+
+# Function to search index
+
 
 def search_index(index, query):
-    stemmer = PorterStemmer()
-    terms = query.split()
-    stemmed_terms = [stemmer.stem(term) for term in terms]
-    doc_ids = []  # Initialize an empty list for doc_ids
-    for term in stemmed_terms:
-        try:
-            pointer = index.getLexicon()[term]
-            posting_list = index.getInvertedIndex().getPostings(pointer)
-            if posting_list is not None:
-                # Use list comprehension
-                term_doc_ids = [posting.getDocId() for posting in posting_list]
-                if not doc_ids:  # If doc_ids is empty, assign term_doc_ids directly
-                    doc_ids = term_doc_ids
-                else:
-                    # Update doc_ids by taking intersection
-                    doc_ids = list(set(doc_ids).intersection(term_doc_ids))
-            else:
-                print("Posting list for term '%s' is empty" % term)
-        except KeyError:
-            print("Term '%s' not found in the index" % term)
-    return doc_ids
+    lexicon = index.getLexicon()
+    metadata = index.getMetaIndex()
+    inverted = index.getInvertedIndex()
+    lex = lexicon.getLexiconEntry(query)
+
+    if lex is None:
+        return []  # Return empty list if query term is not found in the index
+
+    postings = inverted.getPostings(lex)
+
+    if postings is None:
+        return []  # Return empty list if no postings are found for the query term
+
+    ids = [metadata.getItem("docno", posting.getId())
+           for posting in postings]
+    return ids
+
+# Function to rank using TF-IDF
 
 
-def rank_documents(index, doc_ids, query):
-    scores = {}
-    stemmer = PorterStemmer()
-    terms = query.split()
-    stemmed_terms = [stemmer.stem(term) for term in terms]
-    for doc_id in doc_ids:
-        score = 0
-        for term in stemmed_terms:
-            try:
-                pointer = index.getLexicon()[term]
-                posting_list = index.getInvertedIndex().getPostings(pointer)
-                if posting_list is not None:
-                    for posting in posting_list:
-                        if posting.getDocId() == doc_id:
-                            score += posting.getFrequency()
-                else:
-                    print("Posting list for term '%s' is empty" % term)
-            except KeyError:
-                print("Term '%s' not found in the index" % term)
-        scores[doc_id] = score
-    sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)
-    return sorted_scores
+def rank_tfidf(index, query):
+    tfidf_retr = pt.BatchRetrieve(
+        index, controls={"wmodel": "TF_IDF"})
+    return tfidf_retr.search(query)
+
+# Function to display document index
 
 
 def display_document_index(index, docid):
     di = index.getDirectIndex()
     doi = index.getDocumentIndex()
     lex = index.getLexicon()
-    doc_entry = doi.getDocumentEntry(docid)
-    posting_list = di.getPostings(doc_entry)
-    for posting in posting_list:
-        termid = posting.getId()
-        lex_entry = lex.getLexiconEntry(termid)
-        print(lex_entry.getKey() + " -> " + str(posting) +
-              " doclen=%d" % posting.getDocumentLength())
+    for i in range(len(docid)):
+        doc_entry = doi.getDocumentEntry(docid[i])
+        posting_list = di.getPostings(doc_entry)
+        for posting in posting_list:
+            termid = posting.getId()
+            lex_entry = lex.getLexiconEntry(termid)
+            print(lex_entry.getKey() + " -> " + str(posting) +
+                  " doclen=%d" % posting.getDocumentLength())
+
+# Function to get BERT embeddings
 
 
-def main():
-    collection = read_data(categories)
-    df = pd.DataFrame(collection)
-    df.to_csv('text.csv', index=False)
-    df = pd.read_csv('./text.csv')
+def get_embeddings(text):
+    tokens = encode(text)
+    input_ids = tokens["input_ids"].to(device)
+    attention_mask = tokens["attention_mask"].to(device)
+    output = bert_model(input_ids=input_ids, attention_mask=attention_mask)
+    return output
 
-    df = index_documents(df)
+# Function to encode text
 
-    inverted_index = build_inverted_index(df)
 
-    print(df)
+def encode(text, max_length=32):
+    return bert_tokenizer.encode_plus(
+        text,
+        add_special_tokens=True,
+        truncation=True,
+        max_length=max_length,
+        padding="max_length",
+        return_attention_mask=True,
+        return_tensors='pt',
+    )
 
-    print(inverted_index)
+# Function to search the index with query
 
-    indexer = pt.DFIndexer(
-        'C:\\Users\\midoh\\Desktop\\UST-CSAI\\Y2S2\\DSAI 201 (Mining & IR)\\Project\\myFirstIndex', overwrite=True)
-    index_ref = indexer.index(df["processed_text"], df["docno"])
-    index = pt.IndexFactory.of(index_ref)
 
-    query = input("Enter your query: ")
-
-    doc_ids = search_index(index, query)
-
-    ranked_documents = rank_documents(index, doc_ids, query)
-
-    print("Ranked Documents:")
-    for doc_id, score in ranked_documents:
-        print(f"Document ID: {doc_id}, Score: {score}")
-
-    docid = 10
+def search():
+    query = query_entry.get()
+    if not query:
+        messagebox.showerror("Error", "Please enter a query.")
+        return
+    for term in query.split():
+        inv_indx = inverted_index[f'{term}']
+        if inv_indx is None:
+            result_text.insert(
+                tk.END, f'Term "{term}" not found in the index\n')
+        else:
+            result_text.insert(tk.END, f'Term "{term}" found in the index\n')
+    inv_indx = list(inv_indx.keys())
+    docid = inv_indx
     display_document_index(index, docid)
+    ranked_documents = rank_tfidf(index, query)
+    # Extract docid and score lists
+    docid = list(ranked_documents['docid'])
+    score = list(ranked_documents['score'])
+    # Convert lists to DataFrame
+    df3 = pd.DataFrame(list(zip(docid, score)),
+                       columns=['Document ID', 'Score'])
+    result_text.insert(tk.END, "Ranked Documents:\n")
+    result_text.insert(tk.END, df3.to_string(index=False) + "\n\n")
+    query_processed = preprocess_text(query)
+    query_processed = clean_text(query_processed)
+    bm25 = pt.BatchRetrieve(index, controls={"wmodel": "BM25"}, num_results=10)
+    bm25_res = bm25.search(query_processed)
+    rm3_expander2 = pt.rewrite.RM3(index, fb_terms=10, fb_docs=100)
+    rm3_qe = bm25 >> rm3_expander2
+    expanded_query = rm3_qe.search(query_processed).iloc[0]["query"]
+    expanded_query_formatted = ' '.join(expanded_query.split()[1:])
+    results_wqe = bm25.search(expanded_query_formatted)
+    result_text.insert(tk.END, "   Before Expansion    After Expansion\n")
+    result_text.insert(tk.END, pd.concat([bm25_res[['docid', 'score']][0:5].add_suffix('_1'),
+                                          results_wqe[['docid', 'score']][0:5].add_suffix('_2')], axis=1).fillna(''))
+    result_text.insert(tk.END, "\n")
+    result_text.insert(tk.END, df['text'][df['docno'].isin(
+        results_wqe['docno'].loc[0:5].tolist())])
+    result_text.insert(tk.END, "\n")
+    for term in query.split():
+        text = f"{term}"
+        embeddings = get_embeddings(text)
+        result_text.insert(tk.END, f"Term : {term}\n")
+        result_text.insert(tk.END, f"Embedding shape : {
+                           embeddings[0].shape}\n")
+        result_text.insert(tk.END, f"Embedding : {embeddings[0]}\n\n")
 
 
-if __name__ == "__main__":
-    main()
+# Initialize PyTerrier index
+collection = read_data(categories)
+df = pd.DataFrame(collection)
+df.to_csv('text.csv', index=False)
+df = pd.read_csv('./text.csv')
+df2 = index_documents(df)
+inverted_index = build_inverted_index(df)
+indexer = pt.DFIndexer(
+    'C:\\Users\\midoh\\Desktop\\UST-CSAI\\Y2S2\\DSAI 201 (Mining & IR)\\Project\\mySecondIndex', overwrite=True)
+index_ref = indexer.index(df["processed_text"], df["docno"])
+index = pt.IndexFactory.of(index_ref)
+
+# Set BERT model to run on CPU
+model_name = "bert-base-uncased"
+device = torch.device("cpu")
+bert_tokenizer = AutoTokenizer.from_pretrained(model_name)
+bert_model = AutoModel.from_pretrained(model_name)
+
+# Create the main window
+root = tk.Tk()
+root.title("IR System")
+
+# Create input label and entry
+query_label = tk.Label(root, text="Enter your query:")
+query_label.pack()
+query_entry = tk.Entry(root, width=50)
+query_entry.pack()
+
+# Create search button
+search_button = tk.Button(root, text="Search", command=search)
+search_button.pack()
+
+# Create scrolled text widget to display results
+result_text = scrolledtext.ScrolledText(root, width=100, height=30)
+result_text.pack()
+
+# Run the main event loop
+root.mainloop()
