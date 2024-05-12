@@ -15,23 +15,16 @@ import tensorflow_hub as hub
 import numpy as np
 from transformers import AutoTokenizer, AutoModel
 
-
-# Initialize PyTerrier if not already started
 if not pt.started():
     pt.init(boot_packages=["com.github.terrierteam:terrier-prf:-SNAPSHOT"])
 
-# Set JAVA_HOME environment variable
 os.environ["JAVA_HOME"] = "C:\\Program Files\\Java\\jdk-22"
 
-# Initialize PyTerrier again
 if not pt.started():
     pt.init()
 
-# Define categories
 categories = ['business', 'entertainment', 'food',
               'graphics', 'historical', 'space', 'sport', 'technologie']
-
-# Function to read data
 
 
 def read_data(categories):
@@ -46,8 +39,6 @@ def read_data(categories):
                     if line:
                         collection.append({'category': category, 'text': line})
     return collection
-
-# Function to preprocess text
 
 
 def preprocess_text(text):
@@ -77,8 +68,6 @@ def preprocess_text(text):
     text = stem_text(text)
     return text
 
-# Function to clean text
-
 
 def clean_text(text):
     text = re.sub(r"http\S+", " ", text)
@@ -91,8 +80,6 @@ def clean_text(text):
     text = text.strip()
     return text
 
-# Function to index documents
-
 
 def index_documents(df):
     df['processed_text'] = df['text'].apply(preprocess_text)
@@ -100,8 +87,6 @@ def index_documents(df):
     df['docno'] = range(1, len(df)+1)
     df['docno'] = df['docno'].apply(str)
     return df
-
-# Function to build inverted index
 
 
 def build_inverted_index(df):
@@ -119,8 +104,6 @@ def build_inverted_index(df):
             inverted_index[term][doc_id] += 1
     return inverted_index
 
-# Function to search index
-
 
 def search_index(index, query):
     lexicon = index.getLexicon()
@@ -129,26 +112,22 @@ def search_index(index, query):
     lex = lexicon.getLexiconEntry(query)
 
     if lex is None:
-        return []  # Return empty list if query term is not found in the index
+        return []
 
     postings = inverted.getPostings(lex)
 
     if postings is None:
-        return []  # Return empty list if no postings are found for the query term
+        return []
 
     ids = [metadata.getItem("docno", posting.getId())
            for posting in postings]
     return ids
-
-# Function to rank using TF-IDF
 
 
 def rank_tfidf(index, query):
     tfidf_retr = pt.BatchRetrieve(
         index, controls={"wmodel": "TF_IDF"})
     return tfidf_retr.search(query)
-
-# Function to display document index
 
 
 def display_document_index(index, docid):
@@ -164,8 +143,6 @@ def display_document_index(index, docid):
             print(lex_entry.getKey() + " -> " + str(posting) +
                   " doclen=%d" % posting.getDocumentLength())
 
-# Function to get BERT embeddings
-
 
 def get_embeddings(text):
     tokens = encode(text)
@@ -173,8 +150,6 @@ def get_embeddings(text):
     attention_mask = tokens["attention_mask"].to(device)
     output = bert_model(input_ids=input_ids, attention_mask=attention_mask)
     return output
-
-# Function to encode text
 
 
 def encode(text, max_length=32):
@@ -187,8 +162,6 @@ def encode(text, max_length=32):
         return_attention_mask=True,
         return_tensors='pt',
     )
-
-# Function to search the index with query
 
 
 def search():
@@ -207,10 +180,8 @@ def search():
     docid = inv_indx
     display_document_index(index, docid)
     ranked_documents = rank_tfidf(index, query)
-    # Extract docid and score lists
     docid = list(ranked_documents['docid'])
     score = list(ranked_documents['score'])
-    # Convert lists to DataFrame
     df3 = pd.DataFrame(list(zip(docid, score)),
                        columns=['Document ID', 'Score'])
     result_text.insert(tk.END, "Ranked Documents:\n")
@@ -240,7 +211,6 @@ def search():
         result_text.insert(tk.END, f"Embedding : {embeddings[0]}\n\n")
 
 
-# Initialize PyTerrier index
 collection = read_data(categories)
 df = pd.DataFrame(collection)
 df.to_csv('text.csv', index=False)
@@ -252,29 +222,23 @@ indexer = pt.DFIndexer(
 index_ref = indexer.index(df["processed_text"], df["docno"])
 index = pt.IndexFactory.of(index_ref)
 
-# Set BERT model to run on CPU
 model_name = "bert-base-uncased"
 device = torch.device("cpu")
 bert_tokenizer = AutoTokenizer.from_pretrained(model_name)
 bert_model = AutoModel.from_pretrained(model_name)
 
-# Create the main window
 root = tk.Tk()
 root.title("IR System")
 
-# Create input label and entry
 query_label = tk.Label(root, text="Enter your query:")
 query_label.pack()
 query_entry = tk.Entry(root, width=50)
 query_entry.pack()
 
-# Create search button
 search_button = tk.Button(root, text="Search", command=search)
 search_button.pack()
 
-# Create scrolled text widget to display results
 result_text = scrolledtext.ScrolledText(root, width=100, height=30)
 result_text.pack()
 
-# Run the main event loop
 root.mainloop()
